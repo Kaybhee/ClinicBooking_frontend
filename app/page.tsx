@@ -29,6 +29,9 @@ export default function Page() {
   const [provider, setProvider] = useState<string>('all');
   const [selected, setSelected] = useState<Slot | null>(null);
   const [confirmation, setConfirmation] = useState<Booking | null>(null);
+  // Lets the 'your bookings' list follow along when something is booked or cancelled above it.
+  const [lastBooking, setLastBooking] = useState<Booking | null>(null);
+  const [version, setVersion] = useState(0);
 
   const loadSlots = useCallback(async () => {
     try {
@@ -83,7 +86,12 @@ export default function Page() {
             </p>
           )}
           {!slots && !loadError && <p className="muted">Loading open times…</p>}
-          {slots && days.length === 0 && <p className="muted">No upcoming times{provider !== 'all' ? ` for ${provider}` : ''} right now. Check back soon.</p>}
+          {slots && slots.length === 0 && (
+            <p className="muted">The clinic has not published any appointment times yet. Please check back soon.</p>
+          )}
+          {slots && slots.length > 0 && days.length === 0 && (
+            <p className="muted">No upcoming times{provider !== 'all' ? ` for ${provider}` : ''} right now. Try another doctor, or check back soon.</p>
+          )}
 
           {days.map((list) => (
             <div className="day" key={dayKey(list[0].start)}>
@@ -119,6 +127,10 @@ export default function Page() {
                 setConfirmation(null);
                 setSelected(null);
               }}
+              onCancelled={() => {
+                setVersion((v) => v + 1);
+                loadSlots();
+              }}
             />
           ) : selected ? (
             <BookingForm
@@ -127,6 +139,7 @@ export default function Page() {
               onCancel={() => setSelected(null)}
               onBooked={(b) => {
                 setConfirmation(b);
+                setLastBooking(b);
                 setSelected(null);
                 loadSlots();
               }}
@@ -138,13 +151,17 @@ export default function Page() {
           ) : (
             <div>
               <h2>Your appointment</h2>
-              <p className="muted">Choose a time on the left to start.</p>
+              <ol className="steps">
+                <li>Pick a green time</li>
+                <li>Enter your name and email</li>
+                <li>Get your booking reference</li>
+              </ol>
             </div>
           )}
         </aside>
       </div>
 
-      <MyBookings slotById={slotById} onChanged={loadSlots} />
+      <MyBookings slotById={slotById} onChanged={loadSlots} lastBooking={lastBooking} version={version} />
     </main>
   );
 }
@@ -206,10 +223,28 @@ function BookingForm({ slot, onBooked, onCancel, onTaken }: { slot: Slot; onBook
   );
 }
 
-function Confirmation({ booking, slot, onAnother }: { booking: Booking; slot?: Slot; onAnother: () => void }) {
+function Confirmation({ booking, slot, onAnother, onCancelled }: { booking: Booking; slot?: Slot; onAnother: () => void; onCancelled: () => void }) {
+  const [status, setStatus] = useState(booking.status);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function cancel() {
+    if (!window.confirm('Cancel this appointment?')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus((await api.cancel(booking.id)).status);
+      onCancelled();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="confirmation">
-      <h2>You are booked</h2>
+      <h2>{status === 'confirmed' ? 'You are booked' : 'Appointment cancelled'}</h2>
       {slot && (
         <p className="picked">
           <strong>{slot.provider}</strong>
@@ -225,15 +260,43 @@ function Confirmation({ booking, slot, onAnother }: { booking: Booking; slot?: S
         <dt>Booking reference</dt>
         <dd className="ref">{booking.id}</dd>
       </dl>
-      <p className="muted">Keep this reference. You can look it up or cancel below.</p>
-      <button className="ghost" onClick={onAnother}>
-        Book another time
-      </button>
+      {status === 'confirmed' && <p className="muted">Keep this reference. It also appears under "Your bookings" below.</p>}
+      {error && (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="actions">
+        <button className="primary" onClick={onAnother}>
+          Book another time
+        </button>
+        {status === 'confirmed' && (
+          <button className="ghost danger" onClick={cancel} disabled={busy}>
+            {busy ? 'Cancelling…' : 'Cancel this appointment'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
 
-function MyBookings({ slotById, onChanged }: { slotById: Map<string, Slot>; onChanged: () => void }) {
+const EMAIL_KEY = 'clinic-booking-email';
+const readStoredEmail = () => {
+  try {
+    return window.localStorage.getItem(EMAIL_KEY) ?? '';
+  } catch {
+    return '';
+  }
+};
+const storeEmail = (v: string) => {
+  try {
+    window.localStorage.setItem(EMAIL_KEY, v);
+  } catch {
+    /* private mode: the page works without it */
+  }
+};
+
+function MyBookings({ slotById, onChanged, lastBooking, version }: { slotById: Map<string, Slot>; onChanged: () => void; lastBooking: Booking | null; version: number }) {
   const [email, setEmail] = useState('');
   const [items, setItems] = useState<Booking[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -245,21 +308,43 @@ function MyBookings({ slotById, onChanged }: { slotById: Map<string, Slot>; onCh
   const [found, setFound] = useState<Booking | null>(null);
   const [refError, setRefError] = useState<string | null>(null);
 
-  async function findByEmail(e: FormEvent) {
-    e.preventDefault();
+  const load = useCallback(async (address: string) => {
     setBusy(true);
     setError(null);
     try {
-      const page = await api.list(email);
+      const page = await api.list(address);
       setItems(page.bookings);
       setCursor(page.next_cursor);
-      setSearched(email.trim().toLowerCase());
+      setSearched(address.trim().toLowerCase());
+      storeEmail(address.trim());
     } catch (err) {
       setItems(null);
       setError(errorText(err));
     } finally {
       setBusy(false);
     }
+  }, []);
+
+  // Returning visitor: remember the last email used and show their bookings straight away.
+  useEffect(() => {
+    const stored = readStoredEmail();
+    if (stored) {
+      setEmail(stored);
+      load(stored);
+    }
+  }, [load]);
+
+  // Something was just booked (or cancelled) above: show it here without any extra clicks.
+  useEffect(() => {
+    if (lastBooking) {
+      setEmail(lastBooking.email);
+      load(lastBooking.email);
+    }
+  }, [lastBooking, version, load]);
+
+  function findByEmail(e: FormEvent) {
+    e.preventDefault();
+    load(email);
   }
 
   async function more() {
@@ -318,7 +403,8 @@ function MyBookings({ slotById, onChanged }: { slotById: Map<string, Slot>; onCh
 
   return (
     <section className="lookup" aria-labelledby="mine-heading">
-      <h2 id="mine-heading">Find or cancel a booking</h2>
+      <h2 id="mine-heading">Your bookings</h2>
+      <p className="muted lookup-intro">Bookings you make appear here automatically. Booked before, or on another device? Enter your email.</p>
       <div className="lookup-grid">
         <form onSubmit={findByEmail}>
           <label>
@@ -326,14 +412,14 @@ function MyBookings({ slotById, onChanged }: { slotById: Map<string, Slot>; onCh
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" />
           </label>
           <button className="primary" disabled={busy || !email.trim()}>
-            Show my bookings
+            {busy ? 'Looking…' : 'Show my bookings'}
           </button>
           {error && (
             <p className="notice error" role="alert">
               {error}
             </p>
           )}
-          {items && items.length === 0 && <p className="muted">No bookings for {searched}.</p>}
+          {items && items.length === 0 && <p className="muted empty">No bookings for {searched} yet. Pick a time above to make your first one.</p>}
           {items && items.length > 0 && (
             <ul className="rows">{items.map((b) => row(b, (u) => setItems((cur) => (cur ?? []).map((x) => (x.id === u.id ? u : x)))))}</ul>
           )}
@@ -346,8 +432,8 @@ function MyBookings({ slotById, onChanged }: { slotById: Map<string, Slot>; onCh
 
         <form onSubmit={findByRef}>
           <label>
-            Booking reference
-            <input value={ref} onChange={(e) => setRef(e.target.value)} required spellCheck={false} />
+            Have a booking reference instead?
+            <input value={ref} onChange={(e) => setRef(e.target.value)} required spellCheck={false} placeholder="Paste it here" />
           </label>
           <button className="primary" disabled={!ref.trim()}>
             Look up booking

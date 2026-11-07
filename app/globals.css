@@ -100,3 +100,7 @@ button { font: inherit; }
 @media (prefers-reduced-motion: no-preference) {
   .slot, .chip, .primary, .ghost { transition: background-color 0.12s, border-color 0.12s, color 0.12s; }
 }
+
+.steps { margin: 0.8rem 0 0; padding-left: 1.2rem; display: grid; gap: 0.35rem; color: var(--slate); }
+.lookup-intro { margin: -0.6rem 0 1.2rem; }
+.empty { margin-top: 0.8rem; }

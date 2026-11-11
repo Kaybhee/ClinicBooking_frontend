@@ -2,10 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * Same-origin proxy to the booking API. It adds the secret X-API-Key on the server, so the
- * key never reaches the browser, and it only forwards the routes the page needs (no /reset).
- */
+
 const ALLOWED: Array<[string, RegExp]> = [
   ['GET', /^slots$/],
   ['POST', /^bookings$/],
